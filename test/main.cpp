@@ -1,31 +1,33 @@
 #include "observable/task.hpp"
 #include <iostream>
-#include <thread>
 #include <chrono>
 #include <exception>
 
 
 int main(int argc, char* *argv) {
     obs::task tasks{};
+    tasks.set_max_workers(6);
 
-    auto t1 = tasks.run([]{
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        for (int iii = 0; iii < 4; iii++) {
+    auto t1 = tasks.run([&]{
+        tasks.delay(std::chrono::milliseconds(100)).wait();
+        for (int iii = 0; iii < 2; iii++) {
             std::cout << ">> hello from task 1 --- @" << (iii + 1) << '\n'
                       << "   my thread id=" << std::this_thread::get_id() << '\n'
                       << '\n';
-            std::this_thread::sleep_for(std::chrono::seconds(1));
+
+            tasks.delay(std::chrono::seconds(1)).wait();
         }
         return 7.5;
     });
 
-    auto t2 = tasks.run([]{
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
-        for (int iii = 0; iii < 4; iii++) {
+    auto t2 = tasks.run([&]{
+        tasks.delay(std::chrono::milliseconds(200)).wait();
+        for (int iii = 0; iii < 2; iii++) {
             std::cout << "## hello from task 2 --- @" << (iii + 1) << '\n'
                       << "   my thread id=" << std::this_thread::get_id() << '\n'
                       << '\n';
-            std::this_thread::sleep_for(std::chrono::seconds(1));
+
+            tasks.delay(std::chrono::seconds(1)).wait();
         }
 
         throw std::runtime_error("bad result!");
@@ -35,18 +37,34 @@ int main(int argc, char* *argv) {
     auto t3 = tasks.run([&]{
         t2.get_future().wait();
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(300));
-        for (int iii = 0; iii < 4; iii++) {
+        tasks.delay(std::chrono::milliseconds(300)).wait();
+        for (int iii = 0; iii < 2; iii++) {
             std::cout << "^^ hello from task 3 --- @" << (iii + 1) << '\n'
                       << "   my thread id=" << std::this_thread::get_id() << '\n'
                       << '\n';
-            std::this_thread::sleep_for(std::chrono::seconds(1));
+
+            tasks.delay(std::chrono::seconds(1)).wait();
         }
     });
 
 
     std::cout << "waiting..." << '\n';
     tasks.when_all(t1, t2, t3);
+    
+    auto tdel = tasks.delay(std::chrono::seconds(60));
+    tasks.run([&]{
+        std::cout << " > waiting 2 sec inside task" << '\n';
+        tasks.delay(std::chrono::seconds(2)).wait();
+        
+        std::cout << " > cancelling large delay from task" << '\n';
+        tdel.cancel();
+    });
+    
+    std::cout << "waiting for a large delay..." << '\n';
+    tdel.wait();
+    std::cout << "large delay is finished=" << tdel.is_done() << '\n';
+
+    tasks.when_all(tdel);
 
     try {
         auto res = t1.result();

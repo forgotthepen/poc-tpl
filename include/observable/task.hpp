@@ -25,21 +25,24 @@ SOFTWARE.
 #pragma once
 
 #include "observable/queue.hpp"
-#include <type_traits>
-#include <utility>
-#include <memory>
-#include <functional>
-#include <atomic>
-#include <cstdlib>
+#include <type_traits> // std::enable_if ...
+#include <utility> // std::forward
+#include <algorithm> // std::find_if, std::min_element ...
+#include <memory> // std::unique_ptr ...
+#include <cstdlib> // size_t
 #include <list>
 #include <mutex>
 #include <future>
 #include <exception>
+#include <chrono>
 
 
 namespace obs {
     class task {
     private:
+        template<typename Tfn>
+        using t_fn_ret = decltype(std::declval<Tfn>() ());
+
         class t_worker {
         private:
             class t_waitable_call {
@@ -63,6 +66,9 @@ namespace obs {
                 template<typename Tret, typename Tfn>
                 class WaitableCallImpl : public IWaitableCall {
                 private:
+                    std::promise<Tret> promise_;
+                    Tfn fn_;
+
                     template<typename TPromiseType>
                     inline typename std::enable_if< std::is_void<TPromiseType>::value >::type dispatch(int) {
                         fn_();
@@ -73,9 +79,6 @@ namespace obs {
                     inline void dispatch(...) {
                         promise_.set_value( fn_() );
                     }
-
-                    std::promise<Tret> promise_;
-                    Tfn fn_;
 
                 public:
                     WaitableCallImpl(std::promise<Tret> &&promise, Tfn &&fn):
@@ -136,6 +139,44 @@ namespace obs {
             }
         };
 
+        template<typename Rep, typename Period>
+        class CancellableDelayImpl {
+        private:
+            std::chrono::duration<Rep, Period> duration_;
+            std::mutex mtx_{};
+            std::condition_variable cv_{};
+            bool kill_ = false;
+
+        public:
+            CancellableDelayImpl(const std::chrono::duration<Rep, Period> &duration):
+                duration_(duration)
+            { }
+
+            ~CancellableDelayImpl() {
+                cancel();
+            }
+
+            void delay() {
+                std::unique_lock<std::mutex> lock(mtx_);
+                cv_.wait_for(lock, duration_, [this]{
+                    return kill_;
+                });
+            }
+
+            void cancel() {
+                {
+                    std::lock_guard<std::mutex> lock(mtx_);
+                    if (kill_) {
+                        return;
+                    }
+    
+                    kill_ = true;
+                }
+
+                cv_.notify_one();
+            }
+        };
+
         std::list<t_worker> workers_{};
         std::mutex mtx_{};
 
@@ -144,40 +185,8 @@ namespace obs {
         template<typename ...Args>
         void sink_template_args(Args&& ...) { }
 
-    public:
-        template<typename Tret>
-        class t_waitable {
-        private:
-            std::shared_future<Tret> future_;
-        
-        public:
-            t_waitable(std::shared_future<Tret> &&future):
-                future_( std::move(future) )
-            { }
-
-            inline std::shared_future<Tret> get_future() {
-                return future_;
-            }
-
-            inline decltype(future_.get()) result() const {
-                return future_.get();
-            }
-
-            inline bool has_result() const {
-                return future_.wait_for(0) == std::future_status::ready;
-            }
-        };
-
-        void set_max_workers(unsigned int max) {
-            if (max <= 0) {
-                throw std::runtime_error("max workers must be > 0");
-            }
-    
-            max_workers = max;
-        }
-        
-        template<typename Tfn, typename Tret = decltype(std::declval<Tfn>()())>
-        t_waitable<Tret> run(Tfn &&action) {
+        template<typename Tfn, typename Tret = t_fn_ret<Tfn>>
+        std::shared_future<Tret> run_internal(Tfn &&action) {
             std::lock_guard<std::mutex> lock(mtx_);
     
             {
@@ -216,9 +225,76 @@ namespace obs {
             }
         }
 
+    public:
+        template<typename Tret>
+        class t_waitable {
+        private:
+            std::shared_future<Tret> future_;
+        
+        public:
+            t_waitable(std::shared_future<Tret> &&future):
+                future_( std::move(future) )
+            { }
+
+            inline std::shared_future<Tret> get_future() {
+                return future_;
+            }
+
+            inline decltype(future_.get()) result() const {
+                return future_.get();
+            }
+
+            inline bool is_done() const {
+                return future_.wait_for(std::chrono::nanoseconds(0)) == std::future_status::ready;
+            }
+        };
+
+        template<typename Rep, typename Period>
+        class t_cancellable_delay : public t_waitable<void> {
+        private:
+            std::unique_ptr<CancellableDelayImpl<Rep, Period>> cancellable_delay_;
+
+        public:
+            t_cancellable_delay(std::shared_future<void> &&future, CancellableDelayImpl<Rep, Period> *cancellable_delay):
+                t_waitable<void>( std::move(future) ),
+                cancellable_delay_(cancellable_delay)
+            { }
+
+            inline void cancel() {
+                cancellable_delay_->cancel();
+            }
+            
+            inline void wait() {
+                result();
+            }
+        };
+
+        void set_max_workers(unsigned int max) {
+            if (max <= 0) {
+                throw std::runtime_error("max workers must be > 0");
+            }
+    
+            max_workers = max;
+        }
+
+        template<typename Tfn, typename Tret = t_fn_ret<Tfn>>
+        inline t_waitable<Tret> run(Tfn &&action) {
+            return run_internal( std::forward<Tfn>(action) );
+        }
+
         template<typename ...TWaitables>
-        void when_all(TWaitables&& ...waitables) {
+        inline void when_all(TWaitables& ...waitables) {
             sink_template_args(( (void)waitables.get_future().wait(), char{} ) ...);
+        }
+
+        template<typename Rep, typename Period>
+        t_cancellable_delay<Rep, Period> delay(const std::chrono::duration<Rep, Period> &duration) {
+            auto delayable = new CancellableDelayImpl<Rep, Period>(duration);
+            auto future = run_internal([delayable]{
+                delayable->delay();
+            });
+
+            return t_cancellable_delay<Rep, Period>(std::move(future), delayable);
         }
     };
 }

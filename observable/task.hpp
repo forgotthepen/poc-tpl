@@ -66,8 +66,10 @@ namespace obs {
                 template<typename Tret, typename Tfn>
                 class WaitableCallImpl : public IWaitableCall {
                 private:
+                    using TfnObj = typename std::remove_cv<typename std::remove_reference<Tfn>::type>::type;
+
                     std::promise<Tret> promise_;
-                    Tfn fn_;
+                    TfnObj fn_;
 
                     template<typename TPromiseType>
                     inline typename std::enable_if< std::is_void<TPromiseType>::value >::type dispatch(int) {
@@ -81,7 +83,7 @@ namespace obs {
                     }
 
                 public:
-                    WaitableCallImpl(std::promise<Tret> &&promise, Tfn &&fn):
+                    WaitableCallImpl(std::promise<Tret> &&promise, TfnObj fn):
                         promise_( std::move(promise) ),
                         fn_( std::move(fn) )
                     { }

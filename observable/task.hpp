@@ -25,7 +25,7 @@ SOFTWARE.
 #pragma once
 
 #include "observable/queue.hpp"
-#include <type_traits> // std::enable_if ...
+#include <type_traits> // std::remove_cv, std::remove_reference, ...
 #include <utility> // std::forward
 #include <algorithm> // std::find_if, std::min_element ...
 #include <memory> // std::unique_ptr ...
@@ -66,20 +66,27 @@ namespace obs {
                 template<typename Tret, typename Tfn>
                 class WaitableCallImpl : public IWaitableCall {
                 private:
-                    using TfnObj = typename std::remove_cv<typename std::remove_reference<Tfn>::type>::type;
+                    using TfnObj = typename std::remove_cv< typename std::remove_reference<Tfn>::type >::type;
+
+                    // in C++11 we can't use full function specialization if the function was not inside its own dedicated namespace
+                    // "error: explicit specialization in non-namespace scope"
+                    // also GCC up to v13.3.0 still doesn't support that: https://gcc.gnu.org/bugzilla/show_bug.cgi?id=85282
+                    template<typename Tany>
+                    struct t_iden {
+                        using Tobj = typename std::remove_cv< typename std::remove_reference<Tany>::type >::type;
+                    };
 
                     std::promise<Tret> promise_;
                     TfnObj fn_;
 
                     template<typename TPromiseType>
-                    inline typename std::enable_if< std::is_void<TPromiseType>::value >::type dispatch(int) {
-                        fn_();
-                        promise_.set_value();
+                    inline void dispatch(t_iden<TPromiseType>) noexcept(false) {
+                        promise_.set_value( fn_() );
                     }
 
-                    template<typename TPromiseType>
-                    inline void dispatch(...) {
-                        promise_.set_value( fn_() );
+                    inline void dispatch(t_iden<void>) noexcept(false) {
+                        fn_();
+                        promise_.set_value();
                     }
 
                 public:
@@ -90,7 +97,7 @@ namespace obs {
 
                     void operator ()() noexcept override {
                         try {
-                            dispatch<Tret>(0);
+                            dispatch(t_iden<Tret>{});
                         } catch (...) {
                             promise_.set_exception(std::current_exception());
                         }
@@ -134,7 +141,7 @@ namespace obs {
                 auto future = std::shared_future<Tret>(promise.get_future());
 
                 work_items_.emplace_back(
-                    t_waitable_call(std::move(promise), std::forward<Tfn>(action))
+                    std::move(promise), std::forward<Tfn>(action)
                 );
 
                 return future;
@@ -163,6 +170,8 @@ namespace obs {
                 cv_.wait_for(lock, duration_, [this]{
                     return kill_;
                 });
+
+                kill_ = true; // in case this was a timeout
             }
 
             void cancel() {

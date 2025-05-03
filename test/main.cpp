@@ -50,8 +50,22 @@ int main(int argc, char* *argv) {
 
     std::cout << "waiting..." << '\n';
     tasks.when_all(t1, t2, t3);
+
+    tasks.when_all(
+        tasks.run([]{
+            std::cout << "small callable 1" << '\n';
+        }),
+
+        tasks.run([]{
+            std::cout << "small callable 2" << '\n';
+        }),
+
+        tasks.run([]{
+            std::cout << "small callable 3" << '\n';
+        })
+    );
     
-    auto tdel = tasks.delay(std::chrono::seconds(60));
+    auto tdel = tasks.delay(std::chrono::hours(600));
     tasks.run([&]{
         std::cout << " > waiting 2 sec inside task" << '\n';
         tasks.delay(std::chrono::seconds(2)).wait();

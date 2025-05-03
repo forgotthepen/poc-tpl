@@ -294,7 +294,7 @@ namespace obs {
         }
 
         template<typename ...TWaitables>
-        inline void when_all(TWaitables& ...waitables) {
+        inline void when_all(TWaitables&& ...waitables) {
             sink_template_args(( (void)waitables.get_future().wait(), char{} ) ...);
         }
 

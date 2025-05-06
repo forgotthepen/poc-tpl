@@ -66,8 +66,12 @@ int main(int argc, char* *argv) {
     );
     
     auto tdel = tasks.delay(std::chrono::hours(600));
+    auto tm1 = std::chrono::high_resolution_clock::now();
     tasks.run([&]{
-        std::cout << " > waiting 2 sec inside task" << '\n';
+        auto tm2 = std::chrono::high_resolution_clock::now();
+        auto dd = std::chrono::duration_cast<std::chrono::microseconds>(tm2 - tm1).count();
+
+        std::cout << " > waiting 2 sec inside task, activation time=" << dd << "us" << '\n';
         tasks.delay(std::chrono::seconds(2)).wait();
         
         std::cout << " > cancelling large delay from task" << '\n';
